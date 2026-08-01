@@ -1,0 +1,75 @@
+parameters:
+  - name: pushImage
+    displayName: Push the image to the registry (uncheck to build only)
+    type: boolean
+    default: true
+
+  - name: poolVmImage
+    displayName: Microsoft-hosted VM image
+    type: string
+    default: ubuntu-latest
+
+# Manual only: this is a downstream fork of grafana/mcp-grafana rebuilt on
+# demand, not a service with its own release cadence.
+trigger: none
+
+stages:
+  - stage: Build
+    displayName: Build image
+    variables:
+      # fix issue https://github.com/microsoft/azure-pipelines-tasks/issues/17893
+      - name: DOCKER_BUILDKIT
+        value: 1
+      - group: shared-docker-registry
+
+    pool:
+      vmImage: ${{ parameters.poolVmImage }}
+
+    jobs:
+      - job: Build
+        displayName: Build mcp-grafana
+        variables:
+          tag: $(Build.BuildId)
+        steps:
+          # Run the upstream unit suite in a container so the agent needs no Go
+          # toolchain and the version always matches go.mod.
+          - script: |
+              set -e
+              GO_VERSION=$(grep -m1 '^go ' go.mod | awk '{print $2}')
+              echo "go.mod requires Go ${GO_VERSION}"
+              docker run --rm \
+                -v "$(Build.SourcesDirectory)":/src \
+                -w /src \
+                "golang:${GO_VERSION}" \
+                sh -c "go build ./... && go vet -tags unit ./tools/ && go test -tags unit ./..."
+            displayName: Unit Tests
+
+          - task: Docker@2
+            displayName: Build mcp-grafana image
+            inputs:
+              containerRegistry: shared-docker-registry
+              repository: $(Env.Docker.Repository)/mcp-grafana
+              command: build
+              Dockerfile: $(Build.SourcesDirectory)/Dockerfile
+              buildContext: $(Build.SourcesDirectory)
+              tags: |
+                $(tag)
+                latest
+
+          - task: Docker@2
+            displayName: Push mcp-grafana image
+            inputs:
+              containerRegistry: shared-docker-registry
+              repository: $(Env.Docker.Repository)/mcp-grafana
+              command: push
+              tags: |
+                $(tag)
+                latest
+            condition: and(succeeded(), ${{ parameters.pushImage }}, ne(variables['Build.Reason'], 'PullRequest'))
+
+          - script: |
+              echo "Image pushed as:"
+              echo "  $(Env.Docker.ArtifactRegistryUrl)/$(Env.Docker.Repository)/mcp-grafana:$(tag)"
+              echo "Set this tag on myfreeapp-grafana-mcp in myfreeapp-infrastructure."
+            displayName: Report image tag
+            condition: and(succeeded(), ${{ parameters.pushImage }}, ne(variables['Build.Reason'], 'PullRequest'))
