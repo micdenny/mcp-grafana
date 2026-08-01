@@ -37,9 +37,13 @@ stages:
               set -e
               GO_VERSION=$(grep -m1 '^go ' go.mod | awk '{print $2}')
               echo "go.mod requires Go ${GO_VERSION}"
+              # The checkout belongs to the agent user while the container runs
+              # as root, so git inside it refuses the repo as dubious ownership
+              # and Go's VCS stamping fails. None of it is needed to run tests.
               docker run --rm \
                 -v "$(Build.SourcesDirectory)":/src \
                 -w /src \
+                -e GOFLAGS=-buildvcs=false \
                 "golang:${GO_VERSION}" \
                 sh -c "go build ./... && go vet -tags unit ./tools/ && go test -tags unit ./..."
             displayName: Unit Tests
